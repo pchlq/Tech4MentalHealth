@@ -5,7 +5,6 @@ import numpy as np
 from sklearn.metrics import log_loss
 
 
-
 def loss_fn(outputs, targets):
     return nn.BCELoss(outputs, targets) # nn.BCEWithLogitsLoss()(outputs, targets.view(-1, 1))
 

@@ -16,10 +16,11 @@ from torch.utils.data import DataLoader, RandomSampler
 from torch.nn.utils.rnn import pad_sequence
 import transformers
 from transformers import BertTokenizer, BertModel
+from tqdm import tqdm
 
 SEED = 100
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-VALID_SIZE = 0.2 
+VALID_SIZE = 0.15
 LR = 2e-5
 
 
@@ -81,17 +82,45 @@ def run():
     ]
     
     # triangular learning rate, linearly grows untill half of first epoch, then linearly decays 
-    warmup_steps = 10 ** 3
-    total_steps = len(train_iterator) * EPOCHS - warmup_steps
+    warmup_steps = 10**3 # 10 ** 3
+    total_steps = len(train_iterator) * config.EPOCHS - warmup_steps
     optimizer = AdamW(optimizer_grouped_parameters, lr=LR, eps=1e-8)
     scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
     # scheduler = WarmupLinearSchedule(optimizer, warmup_steps=warmup_steps, t_total=total_steps)
+
+    # optimizer = torch.optim.Adam(model.parameters(), lr=LR) # 1e-4)
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", 
+    #                                         patience=5, factor=0.3, min_lr=1e-10, verbose=True)
 
     for epoch in range(config.EPOCHS):
         print('=' * 5, f"EPOCH {epoch}", '=' * 5)
         engine.train_fn(train_iterator, model, optimizer, scheduler)
         engine.eval_fn(valid_iterator, model)
 
+
+    model.eval()
+    test_df = pd.read_csv("../inputs/Test.csv")
+    submission = pd.read_csv('../inputs/SampleSubmission.csv')
+    res = np.zeros((submission.shape[0], len(labels)))
+
+    for i in tqdm(range(len(test_df) // config.TRAIN_BATCH_SIZE + 1)):
+        batch_df = test_df.iloc[i * config.TRAIN_BATCH_SIZE: (i + 1) * config.TRAIN_BATCH_SIZE]
+        assert (batch_df["ID"] == submission["ID"][i * config.TRAIN_BATCH_SIZE: (i + 1) * config.TRAIN_BATCH_SIZE]).all(), f"Id mismatch"
+        texts = []
+        for text in batch_df["text"].tolist():
+            text = config.TOKENIZER.encode(text, add_special_tokens=True)
+            if len(text) > config.MAX_LEN:
+                text = text[:config.MAX_LEN-1] + [config.TOKENIZER.sep_token_id]
+            texts.append(torch.LongTensor(text))
+        x = pad_sequence(texts, batch_first=True, padding_value=config.TOKENIZER.pad_token_id).to(DEVICE)
+        mask = (x != config.TOKENIZER.pad_token_id).float().to(DEVICE)
+
+        with torch.no_grad():
+            _, outputs = model(x, attention_mask=mask)
+        outputs = outputs.cpu().numpy()
+        submission.loc[i * config.TRAIN_BATCH_SIZE: (i * config.TRAIN_BATCH_SIZE + len(outputs)-1), labels] = outputs
+
+    submission.to_csv("../subs/submission_2.csv", index=False)
 
 if __name__ == "__main__":
     run()
